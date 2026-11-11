@@ -1,0 +1,9 @@
+.DS_Store
+.gradle/
+build/
+local.properties
+*.iml
+.idea/
+mac/.build/
+mac/dist/
+.kotlin/
