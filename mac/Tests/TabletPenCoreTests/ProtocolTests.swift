@@ -32,7 +32,7 @@ func decodeFrame(_ f: [UInt8]) throws -> Message {
 
 @Test func vectorsRoundTrip() throws {
     let v = try vectors()
-    #expect(v.count == 7)
+    #expect(v.count == 10)
     for (name, bytes) in v {
         #expect(Codec.encode(try decodeFrame(bytes)) == bytes, "vector \(name)")
     }
@@ -80,4 +80,11 @@ func decodeFrame(_ f: [UInt8]) throws -> Message {
     var r = FrameReader()
     let got = r.feed(hex("020003ff"))  // PING with a 1-byte payload
     #expect(throws: ProtocolError.self) { try got[0].get() }
+}
+
+@Test func mirrorVectorFields() throws {
+    let v = try vectors()
+    #expect(try decodeFrame(v["mirror"]!) == .mirror(on: 1, maxWidth: 2944, maxHeight: 1700))
+    #expect(try decodeFrame(v["videoconfig"]!) == .videoConfig(width: 2048, height: 1408, sps: [0x67, 0x64, 0x0a], pps: [0x68, 0xee]))
+    #expect(try decodeFrame(v["video"]!) == .video(flags: 7, data: [0, 0, 1, 0x65]))
 }

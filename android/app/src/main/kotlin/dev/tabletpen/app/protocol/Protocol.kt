@@ -16,6 +16,13 @@ object Proto {
     const val T_KEY = 0x06
     const val T_PENBTN = 0x07
     const val T_STATS = 0x08
+    const val T_MIRROR = 0x10
+    const val T_VIDEOCFG = 0x11
+    const val T_VIDEO = 0x12
+
+    const val VIDEO_FIRST = 1
+    const val VIDEO_LAST = 2
+    const val VIDEO_KEY = 4
 
     const val TOOL_FINGER = 0
     const val TOOL_PEN = 1
@@ -61,6 +68,14 @@ sealed class Message {
     data class Key(val keyCode: Int, val modifiers: Int, val action: Int) : Message()
     data class PenButton(val kind: Int) : Message()
     data class Stats(val latencyMicros: Long, val eventsPerSec: Int) : Message()
+    /** Tablet → Mac: start/stop mirroring the Mac screen, scaled to fit maxWidth × maxHeight. */
+    data class Mirror(val on: Int, val maxWidth: Int, val maxHeight: Int) : Message()
+    /** Mac → tablet: H.264 parameters (SPS/PPS without start codes). */
+    class VideoConfig(val width: Int, val height: Int, val sps: ByteArray, val pps: ByteArray) : Message() {
+        fun same(o: VideoConfig?) = o != null && width == o.width && height == o.height && sps.contentEquals(o.sps) && pps.contentEquals(o.pps)
+    }
+    /** Mac → tablet: a piece of one Annex-B access unit (flags: VIDEO_FIRST / VIDEO_LAST / VIDEO_KEY). */
+    class Video(val flags: Int, val data: ByteArray) : Message()
     data class Unknown(val type: Int, val payload: ByteArray) : Message()
 }
 
@@ -91,6 +106,10 @@ object Codec {
             is Message.Key -> b.put(Proto.T_KEY.toByte()).putShort(m.keyCode.toShort()).put(m.modifiers.toByte()).put(m.action.toByte())
             is Message.PenButton -> b.put(Proto.T_PENBTN.toByte()).put(m.kind.toByte())
             is Message.Stats -> b.put(Proto.T_STATS.toByte()).putInt(m.latencyMicros.toInt()).putShort(m.eventsPerSec.toShort())
+            is Message.Mirror -> b.put(Proto.T_MIRROR.toByte()).put(m.on.toByte()).putShort(m.maxWidth.toShort()).putShort(m.maxHeight.toShort())
+            is Message.VideoConfig -> b.put(Proto.T_VIDEOCFG.toByte()).putShort(m.width.toShort()).putShort(m.height.toShort())
+                .putShort(m.sps.size.toShort()).put(m.sps).putShort(m.pps.size.toShort()).put(m.pps)
+            is Message.Video -> b.put(Proto.T_VIDEO.toByte()).put(m.flags.toByte()).put(m.data)
             is Message.Unknown -> b.put(m.type.toByte()).put(m.payload)
         }
         val len = b.position() - 2
@@ -150,6 +169,15 @@ object Codec {
             Proto.T_KEY -> Message.Key(b.short.toInt() and 0xFFFF, b.get().toInt() and 0xFF, b.get().toInt() and 0xFF)
             Proto.T_PENBTN -> Message.PenButton(b.get().toInt() and 0xFF)
             Proto.T_STATS -> Message.Stats(b.int.toLong() and 0xFFFFFFFFL, b.short.toInt() and 0xFFFF)
+            Proto.T_MIRROR -> Message.Mirror(b.get().toInt() and 0xFF, b.short.toInt() and 0xFFFF, b.short.toInt() and 0xFFFF)
+            Proto.T_VIDEOCFG -> {
+                val w = b.short.toInt() and 0xFFFF
+                val h = b.short.toInt() and 0xFFFF
+                val sps = ByteArray(b.short.toInt() and 0xFFFF); b.get(sps)
+                val pps = ByteArray(b.short.toInt() and 0xFFFF); b.get(pps)
+                Message.VideoConfig(w, h, sps, pps)
+            }
+            Proto.T_VIDEO -> Message.Video(b.get().toInt() and 0xFF, ByteArray(b.remaining()).also { b.get(it) })
             else -> Message.Unknown(type, ByteArray(b.remaining()).also { b.get(it) })
         }
     }

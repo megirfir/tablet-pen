@@ -7,6 +7,8 @@ import TabletPenCore
 final class Injector {
     var settings: Settings
     var tabletAspect: Double = Surface.default.aspect
+    /// Mirror mode: the display being shown on the tablet. Absolute positions map 1:1 onto it.
+    var mirrorDisplay: CGDirectDisplayID?
 
     private let source = CGEventSource(stateID: .hidSystemState)
     private var pos = CGPoint.zero          // our idea of the cursor, with sub-point precision
@@ -89,7 +91,14 @@ final class Injector {
 
         case let .moveTo(nx, ny):
             lastPost = ProcessInfo.processInfo.systemUptime
-            let m = AbsoluteMapper(tabletAspect: tabletAspect, target: targetRect, fit: settings.aspectFit)
+            let m: AbsoluteMapper
+            if let d = mirrorDisplay {
+                let b = CGDisplayBounds(d)
+                m = AbsoluteMapper(tabletAspect: 1, target: Rect(x: b.origin.x, y: b.origin.y, width: b.width, height: b.height),
+                                   fit: .stretch)
+            } else {
+                m = AbsoluteMapper(tabletAspect: tabletAspect, target: targetRect, fit: settings.aspectFit)
+            }
             let p = m.map(nx: nx, ny: ny)
             let d = (p.x - pos.x, p.y - pos.y)
             pos = CGPoint(x: p.x, y: p.y)

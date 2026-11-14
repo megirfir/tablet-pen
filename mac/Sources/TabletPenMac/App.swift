@@ -78,6 +78,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if s.connected {
             info(String(format: "Latency %.1f ms (max %.1f) · %d samples/s", s.latencyMs, s.latencyMaxMs, s.samplesPerSec))
         }
+        if s.mirroring { info("Mirroring this Mac's screen to the tablet") }
+        if !s.mirrorError.isEmpty {
+            menu.addItem(.separator())
+            let i = NSMenuItem(title: "⚠︎ Mirror: allow Screen Recording…", action: #selector(openScreenRecording), keyEquivalent: "")
+            i.target = self; menu.addItem(i)
+        }
         if !model.trusted {
             menu.addItem(.separator())
             let i = NSMenuItem(title: "⚠︎ Grant Accessibility permission…", action: #selector(openAccessibility), keyEquivalent: "")
@@ -110,6 +116,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func openAccessibility() {
         Injector.promptForAccessibility()
         NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+    }
+
+    @objc func openScreenRecording() {
+        CGRequestScreenCaptureAccess()
+        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
     }
 
     @objc func openSettings() {
@@ -176,7 +187,7 @@ struct SettingsView: View {
                 slider("Sensitivity", $model.settings.sensitivity, 0.2...3)
                 slider("Acceleration", $model.settings.acceleration, 0...2)
             }
-            Section("Absolute mapping") {
+            Section("Absolute mapping and Mirror") {
                 Picker("Screen", selection: $model.settings.targetDisplay) {
                     Text("Main display").tag(UInt32(0))
                     ForEach(NSScreen.screens, id: \.self) { s in

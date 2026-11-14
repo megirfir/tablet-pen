@@ -5,6 +5,8 @@ public enum Proto {
     public static let port: UInt16 = 27183
     public static let version: UInt16 = 1
     public static let sampleSize = 17
+    /// Largest video payload per VIDEO frame (a frame's length field is 16 bits).
+    public static let videoChunk = 60000
 }
 
 public enum Tool: UInt8, Sendable { case finger = 0, pen = 1, eraser = 2, mouse = 3 }
@@ -58,6 +60,13 @@ public enum Message: Equatable, Sendable {
     case penButton(kind: UInt8)
     /// Mac → tablet, for the debug overlay.
     case stats(latencyMicros: UInt32, eventsPerSec: UInt16)
+    /// Tablet → Mac: start (on = 1) or stop mirroring the Mac screen; the video is scaled to fit
+    /// maxWidth × maxHeight pixels. Sending it again while running asks for a fresh keyframe.
+    case mirror(on: UInt8, maxWidth: UInt16, maxHeight: UInt16)
+    /// Mac → tablet: H.264 stream parameters (coded size, SPS, PPS without start codes).
+    case videoConfig(width: UInt16, height: UInt16, sps: [UInt8], pps: [UInt8])
+    /// Mac → tablet: a piece of one Annex-B access unit. flags: 1 first piece, 2 last piece, 4 keyframe.
+    case video(flags: UInt8, data: [UInt8])
     case unknown(type: UInt8, payload: [UInt8])
 }
 
@@ -114,6 +123,13 @@ public enum Codec {
         case let .key(code, mods, action): w.u8(0x06); w.u16(code); w.u8(mods); w.u8(action)
         case let .penButton(kind): w.u8(0x07); w.u8(kind)
         case let .stats(lat, eps): w.u8(0x08); w.u32(lat); w.u16(eps)
+        case let .mirror(on, mw, mh): w.u8(0x10); w.u8(on); w.u16(mw); w.u16(mh)
+        case let .videoConfig(width, height, sps, pps):
+            w.u8(0x11); w.u16(width); w.u16(height)
+            w.u16(UInt16(sps.count)); w.bytes += sps; w.u16(UInt16(pps.count)); w.bytes += pps
+        case let .video(flags, data):
+            precondition(data.count <= Proto.videoChunk, "video piece too large")
+            w.u8(0x12); w.u8(flags); w.bytes += data
         case let .unknown(type, payload): w.u8(type); w.bytes += payload
         }
         var out = Writer()
@@ -155,6 +171,12 @@ public enum Codec {
         case 0x06: return .key(keyCode: try r.u16(), modifiers: try r.u8(), action: try r.u8())
         case 0x07: return .penButton(kind: try r.u8())
         case 0x08: return .stats(latencyMicros: try r.u32(), eventsPerSec: try r.u16())
+        case 0x10: return .mirror(on: try r.u8(), maxWidth: try r.u16(), maxHeight: try r.u16())
+        case 0x11:
+            let w = try r.u16(), h = try r.u16()
+            let sps = try r.take(Int(try r.u16())), pps = try r.take(Int(try r.u16()))
+            return .videoConfig(width: w, height: h, sps: sps, pps: pps)
+        case 0x12: return .video(flags: try r.u8(), data: try r.take(r.remaining))
         default: return .unknown(type: type, payload: try r.take(r.remaining))
         }
     }

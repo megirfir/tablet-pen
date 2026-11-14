@@ -110,9 +110,10 @@ public final class PenTracker {
 
 /// Routes decoded messages to the finger and pen recognizers. One instance per connection.
 public final class InputPipeline {
-    public var settings: Settings {
-        didSet { gestures.settings = settings; pen.settings = settings }
-    }
+    public var settings: Settings { didSet { applySettings() } }
+    /// Mirror mode (the tablet shows the Mac screen): pen and fingers act where they touch,
+    /// whatever the trackpad settings say.
+    public var mirror = false { didSet { applySettings() } }
     public private(set) var surface: Surface
     public let gestures: GestureRecognizer
     public let pen: PenTracker
@@ -125,6 +126,13 @@ public final class InputPipeline {
         self.settings = settings; self.surface = surface
         gestures = GestureRecognizer(settings: settings, surface: surface)
         pen = PenTracker(settings: settings, surface: surface)
+    }
+
+    private func applySettings() {
+        var s = settings
+        if mirror { s.penMode = .absolute }
+        gestures.settings = s; pen.settings = s
+        gestures.directTouch = mirror
     }
 
     public func setSurface(_ s: Surface) {

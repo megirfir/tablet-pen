@@ -403,3 +403,50 @@ extension Array where Element == OutputEvent {
         #expect(c.latency(tabletMicros: 6_010_000, macNow: 1_013_500) == 3_500)
     }
 }
+
+@Suite struct MirrorModeTests {
+    let p = InputPipeline(settings: Settings(), surface: surf)
+    init() { p.mirror = true }
+
+    func moveTos(_ e: [OutputEvent]) -> [(Double, Double)] {
+        e.compactMap { if case let .moveTo(x, y) = $0 { return (x, y) }; return nil }
+    }
+
+    @Test func tapClicksWhereItLands() {
+        var out = p.gestures.handle(finger(.down, x: 2.5, y: 4.5), time: 0)
+        out += p.gestures.handle(finger(.up, x: 2.5, y: 4.5), time: 0.06)
+        #expect(out.count == 3)
+        let m = moveTos(Array(out.prefix(1)))
+        #expect(m.count == 1 && abs(m[0].0 - 0.25) < 0.001 && abs(m[0].1 - 0.75) < 0.001)
+        #expect(out.buttons == [.button(.left, down: true, clicks: 1), .button(.left, down: false, clicks: 1)])
+    }
+
+    @Test func fingerCarriesCursorAbsolutelyEvenWithRelativeSetting() {
+        #expect(p.settings.fingerMode == .relative)
+        var out = p.gestures.handle(finger(.down, x: 5, y: 3), time: 0)
+        for i in 1...10 { out += p.gestures.handle(finger(.move, x: 5 + Double(i) * 0.1, y: 3), time: Double(i) * 0.008) }
+        #expect(out.moves.isEmpty)
+        #expect(abs((moveTos(out).last?.0 ?? 0) - 0.6) < 0.001)
+    }
+
+    @Test func scrollStartsUnderTheFingers() {
+        var out = p.gestures.handle(finger(.down, id: 0, x: 4, y: 3), time: 0)
+        out += p.gestures.handle(finger(.down, id: 1, x: 6, y: 3), time: 0.01)
+        for i in 1...10 {
+            out += p.gestures.handle(finger(.move, id: 0, x: 4, y: 3 + Double(i) * 0.05), time: 0.01 + Double(i) * 0.008)
+            out += p.gestures.handle(finger(.move, id: 1, x: 6, y: 3 + Double(i) * 0.05), time: 0.01 + Double(i) * 0.008)
+        }
+        let first = moveTos(out).first
+        #expect(first != nil && abs(first!.0 - 0.5) < 0.02)
+        #expect(out.scrolls.first?.phase == .began)
+    }
+
+    @Test func penIsAbsoluteInMirrorMode() {
+        var s = Settings(); s.penMode = .relative
+        p.settings = s
+        let out = p.handle(.input(baseMicros: 0, samples: [pen(.hoverEnter, x: 5, y: 3)]))
+        #expect(moveTos(out).count == 1)
+        p.mirror = false
+        #expect(p.pen.settings.penMode == .relative)
+    }
+}

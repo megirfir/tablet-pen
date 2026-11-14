@@ -24,7 +24,10 @@ u8  type
 | 0x06 | KEY    | tablet→mac | u16 macVirtualKeyCode, u8 modifiers (1 cmd, 2 shift, 4 opt, 8 ctrl), u8 action (0 tap, 1 down, 2 up) |
 | 0x07 | PENBTN | tablet→mac | u8 kind (1 click, 2 double click, 3 long press) — the pen's Bluetooth side button |
 | 0x08 | STATS  | mac→tablet | u32 latencyMicros (recent average), u16 eventsPerSec — for the debug overlay |
-| 0x10–0x3F | reserved for note sync (M3), config and shortcut profiles (M6) |
+| 0x10 | MIRROR | tablet→mac | u8 on (1 start, 0 stop), u16 maxWidthPx, u16 maxHeightPx — mirror the Mac screen, scaled to fit. Sent again while running = "send the parameters and a keyframe again" |
+| 0x11 | VIDEOCFG | mac→tablet | u16 width, u16 height, u16 spsLen, SPS, u16 ppsLen, PPS — H.264 parameters (no start codes) |
+| 0x12 | VIDEO | mac→tablet | u8 flags (bit0 first piece, bit1 last piece, bit2 keyframe), then up to 60000 bytes of one Annex-B access unit |
+| 0x13–0x3F | reserved |
 
 Unknown types must be skipped using the frame length, so newer peers stay compatible.
 
@@ -57,6 +60,18 @@ normally becomes one batch; a batch never waits for more input (no added latency
 
 Curves (pressure, tilt dead zone, acceleration) are applied on the Mac so they can be changed
 without touching the tablet.
+
+## Mirroring
+
+After MIRROR(on) the Mac captures one display, encodes H.264 (High profile, no B-frames) and sends
+VIDEOCFG followed by access units, each split into VIDEO pieces because a frame's length field is
+16 bits. Keyframes carry SPS/PPS in-band as well and are only sent at the start and on request; the
+tablet asks for one (MIRROR(on) again) whenever its decoder restarts or it had to skip frames.
+
+While mirroring, HELLO's width/height describe the picture area on the tablet and INPUT x/y are
+normalized to that area, so 0..1 is exactly the mirrored display. The Mac treats all pointing as
+absolute on that display: pen as usual, fingers "direct" (a tap clicks where it lands).
+The stream ends with MIRROR(off) or when the connection drops.
 
 ## Latency measurement
 

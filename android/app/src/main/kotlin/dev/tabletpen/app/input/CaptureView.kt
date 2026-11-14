@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.RectF
 import android.os.Build
 import android.view.InputDevice
 import android.view.MotionEvent
@@ -24,10 +25,18 @@ import kotlin.math.tan
  * historical samples — into one INPUT batch. Nothing is throttled or coalesced: the pen delivers
  * ~240 samples/s and all of them are forwarded.
  */
-class CaptureView(context: Context, private val send: (Message) -> Unit) : View(context) {
+open class CaptureView(context: Context, private val send: (Message) -> Unit) : View(context) {
 
     var hint: String = ""
         set(value) { field = value; postInvalidate() }
+
+    /** Part of the view (pixels) that maps to 0..1; null = the whole view. Positions outside clamp to its edge. */
+    var area: RectF? = null
+    /** Sees every pen event first; returning true keeps it on the tablet (nothing is sent to the Mac). */
+    var penSink: ((MotionEvent) -> Boolean)? = null
+    /** Draw the blue contact dots. */
+    var showContacts = true
+    private var penRemote = false          // the Mac currently believes the pen is near/on the surface
 
     private var penNearUntil = 0L          // uptime ms; fingers are ignored until then (palm rejection)
     private var penNear = false
@@ -59,7 +68,9 @@ class CaptureView(context: Context, private val send: (Message) -> Unit) : View(
     }
 
     private fun forward(e: MotionEvent) {
-        val w = width.toFloat().coerceAtLeast(1f); val h = height.toFloat().coerceAtLeast(1f)
+        val a = area
+        val ox = a?.left ?: 0f; val oy = a?.top ?: 0f
+        val w = (a?.width() ?: width.toFloat()).coerceAtLeast(1f); val h = (a?.height() ?: height.toFloat()).coerceAtLeast(1f)
         val masked = e.actionMasked
         val isPen = (0 until e.pointerCount).any { e.getToolType(it) == MotionEvent.TOOL_TYPE_STYLUS || e.getToolType(it) == MotionEvent.TOOL_TYPE_ERASER }
         val now = e.eventTime
@@ -68,6 +79,18 @@ class CaptureView(context: Context, private val send: (Message) -> Unit) : View(
             penNear = masked != MotionEvent.ACTION_HOVER_EXIT && masked != MotionEvent.ACTION_CANCEL
             lastPenEvent = now
             penNearUntil = now + PALM_GUARD_MS
+            if (penSink?.invoke(e) == true) {
+                if (penRemote) {
+                    // The pen was controlling the Mac a moment ago: release it there, otherwise the
+                    // Mac keeps the button held and keeps ignoring fingers as palm touches.
+                    penRemote = false
+                    val s = Sample(0, e.getPointerId(0), Proto.TOOL_PEN, Proto.ACT_CANCEL, 0,
+                        unit16((e.x - ox) / w), unit16((e.y - oy) / h), 0, 0, 0, 32768)
+                    send(Message.Input(nanos(e) / 1000, listOf(s, s.copy(action = Proto.ACT_HOVER_EXIT))))
+                }
+                return
+            }
+            penRemote = penNear
         } else {
             // Palm rejection: no finger input while the pen is hovering/touching or just left.
             // (penNear expires after 3 s without pen events, in case a hover-exit was missed.)
@@ -119,7 +142,7 @@ class CaptureView(context: Context, private val send: (Message) -> Unit) : View(
                     tool = tool(e.getToolType(p)),
                     action = action,
                     flags = buttons or (if (contact) Proto.FLAG_CONTACT else 0) or (if (!last) Proto.FLAG_HISTORICAL else 0),
-                    x = unit16(x / w), y = unit16(y / h), pressure = unit16(pr),
+                    x = unit16((x - ox) / w), y = unit16((y - oy) / h), pressure = unit16(pr),
                     tiltX = tx, tiltY = ty,
                     orientation = (((ori + PI) / (2 * PI)).coerceIn(0.0, 1.0) * 65535).roundToInt(),
                 )
@@ -150,7 +173,7 @@ class CaptureView(context: Context, private val send: (Message) -> Unit) : View(
             var y = height / 2f - 20f
             for (line in hint.split("\n")) { c.drawText(line, width / 2f, y, paint); y += 46f }
         }
-        for (k in 0 until pn) c.drawCircle(px[k], py[k], 26f, dot)
+        if (showContacts) for (k in 0 until pn) c.drawCircle(px[k], py[k], 26f, dot)
     }
 
     companion object { const val PALM_GUARD_MS = 250L }

@@ -7,7 +7,8 @@ Turns a Lenovo Idea Tab Pro + Tab Pen Plus into a pen/touch input device for a M
 - `protocol/` — wire protocol spec and shared test vectors.
 - `NOTES.md` — decision log and hardware findings.
 
-**What it does:** USB trackpad/mouse mode (fingers and pen), a tablet-only Scratchpad (infinite
+**What it does:** USB trackpad/mouse mode (fingers and pen), a Mirror tab (the Mac's screen on the
+tablet, with touch/pen control and tablet-only doodles on top), a tablet-only Scratchpad (infinite
 canvas with ink and images), and an input Inspector. The originally planned notes app, Wi-Fi
 connection, drawing-tablet mode, shortcut panel and annotate mode were dropped and are not built.
 
@@ -53,6 +54,18 @@ scripts/bundle.sh && open dist/TabletPen.app   # menu-bar app
 (with momentum) or pinch to zoom, double-tap-and-drag drags. Pen: hover moves, touch clicks/drags,
 side button right-clicks. Relative/absolute, sensitivity, acceleration, target screen and gesture
 options are in the Mac menu-bar icon → Settings.
+
+**Mirror tab** — shows the Mac's screen (the display chosen under Settings → Screen, default main).
+The first time, macOS asks for **Screen Recording** permission for TabletPen (System Settings →
+Privacy & Security → Screen Recording); the picture appears once it is allowed.
+- Fingers always control the Mac where they touch: tap = click there, two-finger tap = right-click,
+  two fingers = scroll / pinch, double-tap + drag = drag, one finger moving = move the cursor.
+- Pen, chosen in the toolbar: **Doodle** (ink over the picture), **Erase** (removes whole strokes),
+  or **Control Mac** (hover moves the cursor, touch clicks/drags, side button right-clicks).
+- Doodles exist only on the tablet — nothing is drawn on the Mac — and are not saved. They stay
+  where you drew them on the glass, so they do not follow the page when the Mac scrolls; use
+  Clear doodles when you move on.
+- Pen side button while doodling: click switches draw/erase, double click undoes, long press redoes.
 
 **Scratchpad tab** (works without the Mac) — endless canvas. Pen writes; one finger pans, two fingers
 zoom. Paste an image from the clipboard or add one from Photos, move/resize it with "Move image",

@@ -19,7 +19,7 @@ class ProtocolTest {
 
     @Test fun vectorsRoundTrip() {
         val v = vectors()
-        assertEquals(7, v.size)
+        assertEquals(10, v.size)
         for ((name, bytes) in v) assertArrayEquals(name, bytes, Codec.encode(decodeFrame(bytes)))
     }
 
@@ -47,7 +47,7 @@ class ProtocolTest {
                 r.feed(all.copyOfRange(i, i + c)) { n++ }
                 i += c
             }
-            assertEquals("chunk=$chunk", 7, n)
+            assertEquals("chunk=$chunk", 10, n)
         }
     }
 
@@ -61,5 +61,17 @@ class ProtocolTest {
 
     @Test fun unit16Clamps() {
         assertEquals(0, unit16(-1f)); assertEquals(65535, unit16(2f)); assertEquals(32768, unit16(0.5f))
+    }
+
+    @Test fun mirrorVectorFields() {
+        val v = vectors()
+        assertEquals(Message.Mirror(1, 2944, 1700), decodeFrame(v["mirror"]!!))
+        val c = decodeFrame(v["videoconfig"]!!) as Message.VideoConfig
+        assertEquals(2048, c.width); assertEquals(1408, c.height)
+        assertArrayEquals(byteArrayOf(0x67, 0x64, 0x0a), c.sps)
+        assertArrayEquals(byteArrayOf(0x68, 0xee.toByte()), c.pps)
+        val f = decodeFrame(v["video"]!!) as Message.Video
+        assertEquals(7, f.flags)
+        assertArrayEquals(byteArrayOf(0, 0, 1, 0x65), f.data)
     }
 }

@@ -30,6 +30,10 @@ public enum OutputEvent: Equatable, Sendable {
 public final class GestureRecognizer {
     public var settings: Settings
     public var surface: Surface
+    /// Mirror mode: the tablet shows the Mac screen, so fingers act where they touch — a tap
+    /// clicks at the tapped spot, a moving finger carries the cursor, scroll/zoom happen under
+    /// the fingers.
+    public var directTouch = false
 
     // Tunables (inches / seconds)
     let moveSlop = 0.02            // travel before the cursor starts to follow (filters touch jitter)
@@ -88,6 +92,10 @@ public final class GestureRecognizer {
     private func spread() -> Double {
         let c = centroid()
         return touches.values.reduce(0) { $0 + hypot($1.x - c.x, $1.y - c.y) } / Double(max(touches.count, 1)) * 2
+    }
+
+    private func here(_ x: Double, _ y: Double) -> OutputEvent {
+        .moveTo(nx: min(max(x / max(surface.widthIn, 1e-6), 0), 1), ny: min(max(y / max(surface.heightIn, 1e-6), 0), 1))
     }
 
     private func gain(_ dx: Double, _ dy: Double, _ t: Double) -> OutputEvent {
@@ -171,13 +179,14 @@ public final class GestureRecognizer {
                     moving = true
                     lastMoveTime = t
                     if pendingTapDrag {
+                        if directTouch { out.append(here(touch.startX, touch.startY)) }
                         out.append(.button(.left, down: true, clicks: 1))
                         drag = .tap; moved = true
                     }
                     break   // swallow the slop so the cursor does not jump
                 }
                 if travel >= tapSlop { moved = true }
-                if settings.fingerMode == .absolute, drag == .none {
+                if directTouch || (settings.fingerMode == .absolute && drag == .none) {
                     out.append(.moveTo(nx: s.nx, ny: s.ny))
                 } else {
                     out.append(gain(dx, dy, t))
@@ -190,9 +199,11 @@ public final class GestureRecognizer {
                     let dSpread = abs(sp - twoStartSpread), pan = hypot(panX, panY)
                     if settings.pinchZoom, dSpread > zoomSlop, dSpread > pan * 1.5 {
                         twoMode = .zoom; moved = true; lastSpread = sp
+                        if directTouch { out.append(here(after.x, after.y)) }
                         out.append(.magnify(delta: 0, phase: .began))
                     } else if pan > scrollSlop {
                         twoMode = .scroll; moved = true
+                        if directTouch { out.append(here(after.x, after.y)) }
                         out.append(.scroll(dx: 0, dy: 0, phase: .began, momentum: .none))
                         scrollHistory = [(t, 0, 0)]
                     }
@@ -244,6 +255,7 @@ public final class GestureRecognizer {
                     let count = (button == lastTapButton && lastTapCount > 0 && t - lastTapTime < multiTapWindow
                                  && hypot(x - lastTapX, y - lastTapY) < tapNearby) ? lastTapCount + 1 : 1
                     lastTapX = x; lastTapY = y
+                    if directTouch { out.append(here(x, y)) }
                     out.append(.button(button, down: true, clicks: count))
                     out.append(.button(button, down: false, clicks: count))
                     lastTapTime = t; lastTapButton = button; lastTapCount = count

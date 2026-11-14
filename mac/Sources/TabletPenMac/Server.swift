@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import Network
 import TabletPenCore
@@ -9,6 +10,8 @@ struct LinkStats {
     var latencyMaxMs = 0.0
     var samplesPerSec = 0
     var rttMs = 0.0
+    var mirroring = false
+    var mirrorError = ""
 }
 
 /// Accepts the tablet's TCP connection and runs the input pipeline. Everything here runs on
@@ -32,9 +35,86 @@ final class Server {
     /// When false (no Accessibility permission yet) input is received and measured but not injected.
     var injectionEnabled = true
 
+    // Screen mirroring (the tablet's Mirror tab)
+    private let mirror = ScreenMirror()
+    private var videoPending = 0            // bytes handed to the connection and not yet sent
+    private var videoStalled = false        // frames were dropped; the next one sent must be a keyframe
+    private var videoFrames = 0, videoBytes = 0
+
     init(settings: Settings) {
         pipeline = InputPipeline(settings: settings)
         injector = Injector(settings: settings)
+        mirror.onConfig = { [weak self] w, h, sps, pps in
+            self?.queue.async {
+                guard let self, self.stats.mirroring else { return }
+                Log.info("mirror: stream \(w)x\(h)")
+                self.send(.videoConfig(width: UInt16(w), height: UInt16(h), sps: sps, pps: pps))
+            }
+        }
+        mirror.onFrame = { [weak self] data, key in self?.queue.async { self?.sendVideo(data, key: key) } }
+        mirror.onError = { [weak self] text in
+            self?.queue.async {
+                guard let self else { return }
+                self.setMirror(false)
+                self.stats.mirrorError = text
+                self.onStats?(self.stats)
+            }
+        }
+    }
+
+    // MARK: Mirroring
+
+    private func setMirror(_ on: Bool, maxWidth: Int = 0, maxHeight: Int = 0) {
+        if !on {
+            guard stats.mirroring else { return }
+            mirror.stop()
+            stats.mirroring = false
+            if injectionEnabled { for e in pipeline.reset() { injector.apply(e) } }
+            pipeline.mirror = false; injector.mirrorDisplay = nil
+            onStats?(stats)
+            return
+        }
+        var ids = [CGDirectDisplayID](repeating: 0, count: 16)
+        var n: UInt32 = 0
+        CGGetActiveDisplayList(16, &ids, &n)
+        let wanted = injector.settings.targetDisplay
+        let display = ids.prefix(Int(n)).contains(wanted) ? wanted : CGMainDisplayID()
+        if !stats.mirroring || injector.mirrorDisplay != display {
+            if injectionEnabled { for e in pipeline.reset() { injector.apply(e) } }
+            Log.info("mirror: requested, fit \(maxWidth)x\(maxHeight)")
+        }
+        stats.mirroring = true; stats.mirrorError = ""
+        pipeline.mirror = true; injector.mirrorDisplay = display
+        videoStalled = false
+        mirror.start(display: display, maxWidth: maxWidth, maxHeight: maxHeight)
+        onStats?(stats)
+    }
+
+    /// Sends one encoded frame as VIDEO pieces. If the tablet is not keeping up, frames are
+    /// dropped (never queued without bound) and the stream resumes from a fresh keyframe.
+    private func sendVideo(_ data: Data, key: Bool) {
+        guard let conn, stats.mirroring else { return }
+        if videoPending > 6_000_000 || (videoStalled && !key) {
+            if !videoStalled || videoPending < 1_000_000 { mirror.requestKeyframe() }
+            videoStalled = true
+            return
+        }
+        videoStalled = false
+        var out = Data(capacity: data.count + (data.count / Proto.videoChunk + 1) * 4)
+        var pos = 0
+        while pos < data.count {
+            let n = min(Proto.videoChunk, data.count - pos)
+            let flags: UInt8 = (pos == 0 ? 1 : 0) | (pos + n == data.count ? 2 : 0) | (key ? 4 : 0)
+            out.append(contentsOf: [UInt8((n + 2) & 0xFF), UInt8((n + 2) >> 8), 0x12, flags])
+            out.append(data.subdata(in: (data.startIndex + pos)..<(data.startIndex + pos + n)))
+            pos += n
+        }
+        let size = out.count
+        videoPending += size
+        videoFrames += 1; videoBytes += size
+        conn.send(content: out, completion: .contentProcessed { [weak self] _ in
+            self?.queue.async { self?.videoPending -= size }
+        })
     }
 
     func update(settings: Settings) {
@@ -100,6 +180,8 @@ final class Server {
 
     private func dropped() {
         Log.info("tablet disconnected")
+        setMirror(false)
+        videoPending = 0
         for e in pipeline.reset() where injectionEnabled { injector.apply(e) }
         if injectionEnabled { injector.releaseAll() }
         stats = LinkStats()
@@ -147,6 +229,8 @@ final class Server {
                 latSum += l; latCount += 1; latMax = max(latMax, l)
             }
             sampleCount += samples.count
+        case let .mirror(on, w, h):
+            setMirror(on != 0, maxWidth: Int(w), maxHeight: Int(h))
         case .penButton:
             let events = pipeline.handle(m)
             if injectionEnabled { for e in events { injector.apply(e) } }
@@ -186,6 +270,10 @@ final class Server {
                 Log.info(String(format: "stats latency avg %.2f ms max %.2f ms, %d samples/s, rtt %.2f ms",
                                 stats.latencyMs, stats.latencyMaxMs, stats.samplesPerSec, stats.rttMs))
             }
+            if videoFrames > 0 {
+                Log.info(String(format: "mirror: %d frames/s, %.1f Mbit/s", videoFrames * 2, Double(videoBytes) * 16 / 1e6))
+            }
+            videoFrames = 0; videoBytes = 0
             latSum = 0; latCount = 0; latMax = 0; sampleCount = 0
             send(.stats(latencyMicros: UInt32(max(0, min(stats.latencyMs * 1000, 4e9))), eventsPerSec: UInt16(min(stats.samplesPerSec, 65535))))
             onStats?(stats)

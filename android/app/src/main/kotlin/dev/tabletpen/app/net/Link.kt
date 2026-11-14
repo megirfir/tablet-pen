@@ -73,7 +73,7 @@ class Link(
                     }
                 }
                 val reader = FrameReader()
-                val buf = ByteArray(8192)
+                val buf = ByteArray(65536)
                 while (running) {
                     val n = input.read(buf)
                     if (n < 0) break

@@ -19,6 +19,7 @@ cat > "$APP/Contents/Info.plist" <<'P'
   <key>CFBundleVersion</key><string>1</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>
+  <key>NSScreenCaptureUsageDescription</key><string>TabletPen shows this Mac's screen on your tablet in the Mirror tab.</string>
   <key>NSLocalNetworkUsageDescription</key><string>TabletPen receives pen and touch input from your tablet over Wi-Fi.</string>
   <key>NSBonjourServices</key><array><string>_tabletpen._tcp</string></array>
 </dict></plist>

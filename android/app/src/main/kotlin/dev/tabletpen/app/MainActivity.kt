@@ -26,6 +26,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import kotlinx.coroutines.delay
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -43,6 +45,10 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import dev.tabletpen.app.input.CaptureView
 import dev.tabletpen.app.inspector.InspectorView
+import dev.tabletpen.app.mirror.MirrorClient
+import dev.tabletpen.app.mirror.MirrorInk
+import dev.tabletpen.app.mirror.MirrorScreen
+import dev.tabletpen.app.mirror.MirrorView
 import dev.tabletpen.app.net.Link
 import dev.tabletpen.app.protocol.Message
 import dev.tabletpen.app.protocol.Proto
@@ -52,7 +58,7 @@ import dev.tabletpen.app.scratch.ScratchpadView
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 
-enum class Screen(val label: String) { Trackpad("Trackpad"), Scratchpad("Scratchpad"), Inspector("Inspector") }
+enum class Screen(val label: String) { Trackpad("Trackpad"), Mirror("Mirror"), Scratchpad("Scratchpad"), Inspector("Inspector") }
 
 class MainActivity : ComponentActivity() {
     private var inspector: InspectorView? = null
@@ -66,6 +72,24 @@ class MainActivity : ComponentActivity() {
     private var scratchView: ScratchpadView? = null
     /** Set by the scratchpad screen: pen button click toggles the eraser, double click undoes. */
     var scratchPenButton: ((Int) -> Unit)? = null
+    // Mirror tab: the Mac's screen, decoded here, with tablet-only doodles on top.
+    private var mirrorLive by mutableStateOf(false)
+    private var mirrorView: MirrorView? = null
+    private var mirrorMaxW = 0
+    private var mirrorMaxH = 0
+    private var mirrorPenButton: ((Int) -> Boolean)? = null
+    private val mirrorInk = MirrorInk()
+    private val mirrorClient = MirrorClient(
+        onSize = { w, h -> runOnUiThread { mirrorView?.setVideoSize(w, h) } },
+        onLive = { live -> runOnUiThread { mirrorLive = live } },
+        needKey = { requestMirror() },
+    )
+
+    /** Asks the Mac to (re)start the screen stream; if it is already running this yields a fresh keyframe. */
+    private fun requestMirror() {
+        if (screen == Screen.Mirror && mirrorMaxW > 0 && mirrorMaxH > 0) link.send(Message.Mirror(1, mirrorMaxW, mirrorMaxH))
+    }
+
     private val scratchDoc by lazy { ScratchDoc(java.io.File(filesDir, "scratchpad")).also { it.load() } }
     private val pickImage = registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) importImage(uri)
@@ -116,11 +140,16 @@ class MainActivity : ComponentActivity() {
 
         link = Link(
             hello = ::hello,
-            onConnected = { c -> runOnUiThread { connected = c; if (!c) { statsText = ""; macName = "" } } },
+            onConnected = { c ->
+                if (c) requestMirror() else mirrorClient.reset()
+                runOnUiThread { connected = c; if (!c) { statsText = ""; macName = "" } }
+            },
             onMessage = { m ->
                 when (m) {
                     is Message.Ping -> link.send(Message.Pong(m.seq, m.senderMicros, System.nanoTime() / 1000))
                     is Message.Hello -> runOnUiThread { macName = m.name }
+                    is Message.Video -> mirrorClient.video(m)
+                    is Message.VideoConfig -> mirrorClient.config(m)
                     is Message.Stats -> runOnUiThread {
                         statsText = "%.1f ms · %d samples/s".format(m.latencyMicros / 1000.0, m.eventsPerSec)
                     }
@@ -135,6 +164,7 @@ class MainActivity : ComponentActivity() {
                     TopBar()
                     when (screen) {
                         Screen.Trackpad -> TrackpadScreen()
+                        Screen.Mirror -> MirrorTab()
                         Screen.Scratchpad -> ScratchpadScreen(
                             doc = scratchDoc, onView = { scratchView = it },
                             onPaste = ::pasteImage,
@@ -188,6 +218,36 @@ class MainActivity : ComponentActivity() {
         )
     }
 
+    @Composable
+    private fun MirrorTab() {
+        // Until the picture arrives keep asking: the Mac app may start later, or may still be
+        // waiting for its Screen Recording permission.
+        LaunchedEffect(connected, mirrorLive) {
+            while (connected && !mirrorLive) { requestMirror(); delay(2000) }
+        }
+        MirrorScreen(
+            ink = mirrorInk,
+            makeView = { ctx ->
+                MirrorView(ctx, { link.send(it) }, mirrorInk, mirrorClient,
+                    onArea = { aw, ah, vw, vh ->
+                        mirrorMaxW = vw; mirrorMaxH = vh
+                        if (aw != surfaceW || ah != surfaceH) { surfaceW = aw; surfaceH = ah; link.send(hello()) }
+                        requestMirror()
+                    },
+                    onSurface = { requestMirror() },
+                ).also { mirrorView = it }
+            },
+            status = when {
+                mirrorLive -> ""
+                !connected -> "Mirror\nWaiting for the Mac app…"
+                else -> "Waiting for the Mac's screen…\nIf this stays: on the Mac allow TabletPen under\n" +
+                    "System Settings → Privacy & Security → Screen Recording,\nthen quit and reopen the TabletPen Mac app"
+            },
+            setPenButton = { mirrorPenButton = it },
+            onLeave = { link.send(Message.Mirror(0, 0, 0)); mirrorView = null; mirrorLive = false },
+        )
+    }
+
     // The Tab Pen Plus side button is not a MotionEvent button; it arrives from the pen's
     // Bluetooth "Consumer Control" device as vendor key codes: 601 click, 602 double, 603 long.
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
@@ -196,7 +256,11 @@ class MainActivity : ComponentActivity() {
             val kind = event.keyCode - 600
             val fire = if (kind == 1) event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 else event.action == KeyEvent.ACTION_UP
             if (fire) {
-                if (screen == Screen.Scratchpad) scratchPenButton?.invoke(kind) else link.send(Message.PenButton(kind))
+                when {
+                    screen == Screen.Scratchpad -> scratchPenButton?.invoke(kind)
+                    screen == Screen.Mirror && mirrorPenButton?.invoke(kind) == true -> {}
+                    else -> link.send(Message.PenButton(kind))
+                }
             }
             return true
         }
